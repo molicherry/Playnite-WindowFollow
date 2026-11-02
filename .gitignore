@@ -1,0 +1,12 @@
+# 构建产物
+bin/
+obj/
+dist/
+
+# build.ps1 下载的 NuGet 包缓存与临时文件（首次构建会自动下载）
+.build/
+
+# 用户/IDE 本地文件
+*.user
+*.suo
+.vs/

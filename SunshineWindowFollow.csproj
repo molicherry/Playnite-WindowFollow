@@ -1,0 +1,65 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 与 Playnite 一致：.NET Framework 4.6.2（见 Playnite 源码 source\Playnite\Playnite.csproj 与 PlayniteSDK\Playnite.SDK.csproj）。 -->
+    <TargetFramework>net462</TargetFramework>
+    <AssemblyName>SunshineWindowFollow</AssemblyName>
+    <RootNamespace>SunshineWindowFollow</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <LangVersion>7.3</LangVersion>
+    <!-- 使用 src\Properties\AssemblyInfo.cs（build.ps1 的 csc 离线构建也用它），避免自动生成重复的 assembly 属性。 -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Authors>molicherry</Authors>
+    <Description>Playnite plugin: switch Sunshine capture target to the running game window for the active stream session.</Description>
+
+    <!--
+      Playnite SDK 引用策略：
+      1) 如果本机装有 Playnite（默认 C:\Program Files (x86)\Playnite），直接引用它自带的 Playnite.SDK.dll，
+         保证编译时用的 SDK 与运行中的 Playnite 完全一致；
+      2) 否则回退到 NuGet 上的官方 PlayniteSDK 包（版本可用 -p:PlayniteSdkVersion=x.y.z 覆盖）。
+      可用 -p:PlayniteDir="D:\Playnite" 指定 Playnite 安装目录。
+    -->
+    <PlayniteSdkVersion Condition="'$(PlayniteSdkVersion)' == ''">6.17.0</PlayniteSdkVersion>
+    <PlayniteDir Condition="'$(PlayniteDir)' == ''">$(MSBuildProgramFiles32)\Playnite</PlayniteDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove=".build\**" />
+    <Compile Remove="dist\**" />
+    <Compile Remove="packages\**" />
+    <None Remove=".build\**" />
+    <None Remove="dist\**" />
+    <None Remove="packages\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="extension.yaml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- 优先引用本机 Playnite 自带的 Playnite.SDK.dll。 -->
+  <ItemGroup Condition="Exists('$(PlayniteDir)\Playnite.SDK.dll')">
+    <Reference Include="Playnite.SDK">
+      <HintPath>$(PlayniteDir)\Playnite.SDK.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 没有本机 Playnite 时使用官方 NuGet 包；ExcludeAssets=runtime 避免把 Playnite.SDK.dll 复制进插件产物。 -->
+  <ItemGroup Condition="!Exists('$(PlayniteDir)\Playnite.SDK.dll')">
+    <PackageReference Include="PlayniteSDK" Version="$(PlayniteSdkVersion)">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
