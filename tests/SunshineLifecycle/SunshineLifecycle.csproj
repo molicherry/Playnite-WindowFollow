@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>SunshineLifecycleTests</AssemblyName>
+    <RootNamespace>SunshineWindowFollow.LifecycleTests</RootNamespace>
+    <DefineConstants>$(DefineConstants);SUNSHINE_LIFECYCLE_TESTS</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\SunshineController.cs" Link="src\SunshineController.cs" />
+    <Compile Include="..\..\src\SunshineEndpoint.cs" Link="src\SunshineEndpoint.cs" />
+    <Compile Include="..\..\src\JsonLite.cs" Link="src\JsonLite.cs" />
+    <Compile Include="..\..\src\SunshineModels.cs" Link="src\SunshineModels.cs" />
+    <Compile Include="*.cs" />
+  </ItemGroup>
+
+</Project>

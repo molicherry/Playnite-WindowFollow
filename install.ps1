@@ -75,35 +75,65 @@ function Get-ManifestField([string]$manifestText, [string]$fieldName) {
     return $null
 }
 
-function Test-SourceArtifacts {
-    if (-not (Test-Path $SourceDir)) {
-        throw "找不到构建产物目录：$SourceDir。请先运行 .\build.ps1 构建插件。"
+function Read-PluginManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        throw "$Description 缺少 extension.yaml：$ManifestPath"
     }
 
-    $dll = Join-Path $SourceDir $moduleFileName
-    $manifest = Join-Path $SourceDir 'extension.yaml'
-    if (-not (Test-Path $dll)) { throw "构建产物缺少 $moduleFileName：$dll" }
-    if (-not (Test-Path $manifest)) { throw "构建产物缺少 extension.yaml：$manifest" }
+    try {
+        $manifestText = Get-Content -LiteralPath $ManifestPath -Raw -ErrorAction Stop
+    }
+    catch {
+        throw "$Description 的 extension.yaml 无法读取：$ManifestPath（$($_.Exception.Message)）"
+    }
 
-    $manifestText = Get-Content $manifest -Raw
+    if ([string]::IsNullOrWhiteSpace($manifestText)) {
+        throw "$Description 的 extension.yaml 为空：$ManifestPath"
+    }
+
     $manifestId = Get-ManifestField $manifestText 'Id'
     $manifestModule = Get-ManifestField $manifestText 'Module'
     $manifestVersion = Get-ManifestField $manifestText 'Version'
 
     if (-not $manifestId -or -not $manifestId.StartsWith($manifestIdPrefix, [StringComparison]::Ordinal)) {
-        throw "extension.yaml 的 Id 不是本插件（应为 ${manifestIdPrefix}...），拒绝安装：$manifestId"
+        throw "$Description 的 extension.yaml Id 无效（应为 ${manifestIdPrefix}...）：$manifestId"
     }
     if ($manifestModule -ne $moduleFileName) {
-        throw "extension.yaml 的 Module（$manifestModule）与 $moduleFileName 不一致。"
-    }
-    $parsedVersion = $null
-    if (-not [System.Version]::TryParse($manifestVersion, [ref]$parsedVersion)) {
-        throw "extension.yaml 的 Version 不是合法版本号：$manifestVersion"
+        throw "$Description 的 extension.yaml Module（$manifestModule）与 $moduleFileName 不一致。"
     }
 
-    Write-Info "扩展 Id   : $manifestId"
-    Write-Info "扩展版本  : $manifestVersion"
-    return $manifestId
+    $parsedVersion = $null
+    if (-not [System.Version]::TryParse($manifestVersion, [ref]$parsedVersion)) {
+        throw "$Description 的 extension.yaml Version 不是合法版本号：$manifestVersion"
+    }
+
+    return [pscustomobject]@{
+        Id      = $manifestId
+        Module  = $manifestModule
+        Version = $manifestVersion
+    }
+}
+
+function Test-SourceArtifacts {
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+        throw "找不到构建产物目录：$SourceDir。请先运行 .\build.ps1 构建插件。"
+    }
+
+    $dll = Join-Path $SourceDir $moduleFileName
+    if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) {
+        throw "构建产物缺少 $moduleFileName：$dll"
+    }
+
+    $manifest = Read-PluginManifest (Join-Path $SourceDir 'extension.yaml') '构建产物'
+
+    Write-Info "扩展 Id   : $($manifest.Id)"
+    Write-Info "扩展版本  : $($manifest.Version)"
+    return $manifest.Id
 }
 
 function Find-PlayniteInstallDir {
@@ -228,58 +258,84 @@ if ($playniteProcesses.Count -gt 0) {
 }
 
 if ($Uninstall) {
-    if (-not (Test-Path $targetDir)) {
+    if (-not (Test-Path -LiteralPath $targetDir)) {
         Write-Host "插件未安装（目录不存在）：$targetDir" -ForegroundColor Yellow
         return
     }
 
-    $targetManifest = Join-Path $targetDir 'extension.yaml'
-    if (-not (Test-Path $targetManifest)) {
-        throw "目标目录里没有 extension.yaml，为避免误删已停止：$targetDir"
+    if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
+        throw "目标路径存在但不是文件夹，为避免误删已停止：$targetDir"
     }
 
-    $targetManifestText = Get-Content $targetManifest -Raw
-    $targetId = Get-ManifestField $targetManifestText 'Id'
-    if (-not $targetId -or -not $targetId.StartsWith($manifestIdPrefix, [StringComparison]::Ordinal)) {
-        throw "目标目录不是本插件（Id=$targetId），为避免误删已停止：$targetDir"
-    }
+    # 先完整校验 manifest，缺失/无效时绝不递归删除。
+    $null = Read-PluginManifest (Join-Path $targetDir 'extension.yaml') '目标文件夹'
 
-    Remove-Item $targetDir -Recurse -Force
+    Remove-Item -LiteralPath $targetDir -Recurse -Force
     Write-Host ""
     Write-Host "已卸载插件：$targetDir" -ForegroundColor Green
     Write-Host "提示：插件设置数据仍保留在 %AppData%\Playnite\ExtensionsData\c40d275b-5dad-4f8e-9640-137ec5267ef1（插件 GUID 目录，如需彻底清理请手动删除）。"
     return
 }
 
-# 覆盖安装时，旧版本做一次备份（默认）。
-if ((Test-Path $targetDir) -and -not $NoBackup) {
-    $backupRoot = Join-Path $scriptRoot '.build\install-backup'
-    if (-not (Test-Path $backupRoot)) { New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null }
-    $backupDir = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
-    Copy-Item $targetDir $backupDir -Recurse -Force
-    Write-Info "旧版本已备份到：$backupDir"
-}
-
-# 校验旧目录确实是本插件，避免误删用户目录里的其他内容。
-if (Test-Path $targetDir) {
-    $existingManifest = Join-Path $targetDir 'extension.yaml'
-    if (Test-Path $existingManifest) {
-        $existingManifestText = Get-Content $existingManifest -Raw
-        $existingId = Get-ManifestField $existingManifestText 'Id'
-        if (-not $existingId -or -not $existingId.StartsWith($manifestIdPrefix, [StringComparison]::Ordinal)) {
-            throw "目标文件夹已存在且不是本插件（Id=$existingId），为避免误删已停止：$targetDir"
-        }
+# 目标目录存在时，必须先校验 manifest；缺失/无效立即停止，
+# 不能先备份或递归删除，否则可能误删用户目录。
+$targetExists = Test-Path -LiteralPath $targetDir
+if ($targetExists) {
+    if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
+        throw "目标路径存在但不是文件夹，已停止：$targetDir"
     }
 
-    Remove-Item $targetDir -Recurse -Force
+    $null = Read-PluginManifest (Join-Path $targetDir 'extension.yaml') '目标文件夹'
 }
 
-if (-not (Test-Path $resolvedExtensionsDir)) {
+if (-not (Test-Path -LiteralPath $resolvedExtensionsDir)) {
     New-Item -ItemType Directory -Path $resolvedExtensionsDir -Force | Out-Null
 }
 
-New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-Copy-Item (Join-Path $SourceDir '*') -Destination $targetDir -Recurse -Force
+# 先在扩展目录内准备一份新的插件副本并校验，再备份/替换旧目录。
+$stagingDir = Join-Path $resolvedExtensionsDir ('.' + $pluginFolderName + '.staging.' + [Guid]::NewGuid().ToString('N'))
+$oldDir = $null
+
+try {
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $SourceDir '*') -Destination $stagingDir -Recurse -Force
+    $null = Read-PluginManifest (Join-Path $stagingDir 'extension.yaml') '构建产物副本'
+
+    if ($targetExists -and -not $NoBackup) {
+        $backupRoot = Join-Path (Join-Path $scriptRoot '.build') 'install-backup'
+        if (-not (Test-Path -LiteralPath $backupRoot)) {
+            New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+        }
+        $backupDir = Join-Path $backupRoot ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+        Copy-Item -Path (Join-Path $targetDir '*') -Destination $backupDir -Recurse -Force
+        Write-Info "旧版本已备份到：$backupDir"
+    }
+
+    if ($targetExists) {
+        $oldDir = Join-Path $resolvedExtensionsDir ('.' + $pluginFolderName + '.old.' + [Guid]::NewGuid().ToString('N'))
+        Move-Item -LiteralPath $targetDir -Destination $oldDir
+    }
+
+    try {
+        Move-Item -LiteralPath $stagingDir -Destination $targetDir
+    }
+    catch {
+        if ($oldDir -and (Test-Path -LiteralPath $oldDir)) {
+            Move-Item -LiteralPath $oldDir -Destination $targetDir
+        }
+        throw
+    }
+
+    if ($oldDir -and (Test-Path -LiteralPath $oldDir)) {
+        Remove-Item -LiteralPath $oldDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $stagingDir) {
+        Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Step "安装成功"
 Get-ChildItem $targetDir | ForEach-Object { Write-Info ("  - " + $_.Name) }

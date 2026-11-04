@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <!-- 与 Playnite 一致：.NET Framework 4.6.2（见 Playnite 源码 source\Playnite\Playnite.csproj 与 PlayniteSDK\Playnite.SDK.csproj）。 -->
@@ -33,9 +33,14 @@
     <Compile Remove=".build\**" />
     <Compile Remove="dist\**" />
     <Compile Remove="packages\**" />
+    <!-- tests/ 是独立的协议测试工程，不能编进 Playnite 插件。 -->
+    <Compile Remove="tests\**\*.cs" />
+    <Compile Remove="tests/**/*.cs" />
     <None Remove=".build\**" />
     <None Remove="dist\**" />
     <None Remove="packages\**" />
+    <None Remove="tests\**" />
+    <None Remove="tests/**" />
   </ItemGroup>
 
   <ItemGroup>

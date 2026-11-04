@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Controls;
 using Playnite.SDK;
@@ -30,6 +31,7 @@ namespace SunshineWindowFollow
 
         private readonly SunshineSettingsViewModel settingsViewModel;
         private readonly SunshineController controller;
+        private int streamActivationRequested;
 
         /// <summary>插件设置视图模型（设置界面与后台线程都从这里读取当前设置）。</summary>
         public SunshineSettingsViewModel SettingsViewModel
@@ -50,7 +52,11 @@ namespace SunshineWindowFollow
             };
 
             settingsViewModel = new SunshineSettingsViewModel(this, logger);
-            controller = new SunshineController(this, logger);
+            controller = new SunshineController(
+                new PluginSettingsProvider(settingsViewModel),
+                new SunshineClientTransport(logger),
+                new PlayniteLoggerAdapter(logger));
+            controller.ActiveStreamConfirmed += OnActiveStreamConfirmed;
 
             logger.Info(string.Format(
                 CultureInfo.InvariantCulture,
@@ -63,12 +69,10 @@ namespace SunshineWindowFollow
 
         public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
         {
-            // Playnite launched by Sunshine starts in the background because of
-            // the Windows foreground lock; bring its window to the foreground.
-            WindowActivation.ActivateOwnMainWindowAsync();
             try
             {
-                // 可选加分项：插件启动时查询一次 Sunshine 状态，便于排查问题。
+                // 启动时先做一次状态对账；只有确认存在活动串流会话后，
+                // ActiveStreamConfirmed 回调才会尝试把 Playnite 切到前台。
                 controller.QueryStatus();
             }
             catch (Exception exception)
@@ -77,19 +81,41 @@ namespace SunshineWindowFollow
             }
         }
 
+        private void OnActiveStreamConfirmed()
+        {
+            // 前台激活只做一次：状态对账可能多次确认同一个串流会话，
+            // 但每次本地启动都无条件 SetForegroundWindow 会打断用户。
+            if (Interlocked.Exchange(ref streamActivationRequested, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                logger.Info("已确认存在活动串流会话，尝试将 Playnite 窗口切到前台");
+                WindowActivation.ActivateOwnMainWindowAsync(logger);
+            }
+            catch (Exception exception)
+            {
+                logger.Error(exception, "确认活动串流后激活 Playnite 窗口失败");
+            }
+        }
+
         public override void OnGameStarted(OnGameStartedEventArgs args)
         {
             try
             {
                 var gameName = args == null || args.Game == null ? string.Empty : args.Game.Name;
+                var gameId = args == null || args.Game == null ? Guid.Empty : args.Game.Id;
                 var processId = args == null ? 0 : args.StartedProcessId;
                 logger.Info(string.Format(
                     CultureInfo.InvariantCulture,
-                    "收到游戏启动事件：game=\"{0}\", StartedProcessId={1}",
+                    "收到游戏启动事件：game=\"{0}\", game_id={1}, StartedProcessId={2}",
                     gameName,
+                    gameId,
                     processId));
 
-                controller.NotifyGameStarted(gameName, processId);
+                controller.NotifyGameStarted(gameId, gameName, processId);
             }
             catch (Exception exception)
             {
@@ -103,8 +129,9 @@ namespace SunshineWindowFollow
             try
             {
                 var gameName = args == null || args.Game == null ? string.Empty : args.Game.Name;
-                logger.Info("收到游戏退出事件：game=\"" + gameName + "\"");
-                controller.NotifyGameStopped();
+                var gameId = args == null || args.Game == null ? Guid.Empty : args.Game.Id;
+                logger.Info("收到游戏退出事件：game=\"" + gameName + "\", game_id=" + gameId);
+                controller.NotifyGameStopped(gameId);
             }
             catch (Exception exception)
             {
@@ -262,6 +289,15 @@ namespace SunshineWindowFollow
         {
             try
             {
+                controller.ActiveStreamConfirmed -= OnActiveStreamConfirmed;
+            }
+            catch (Exception exception)
+            {
+                logger.Error(exception, "取消活动串流确认回调失败");
+            }
+
+            try
+            {
                 controller.Dispose();
             }
             catch (Exception exception)
@@ -271,5 +307,96 @@ namespace SunshineWindowFollow
 
             base.Dispose();
         }
+
+        #region 控制器适配器
+
+        private sealed class PluginSettingsProvider : ISunshineSettingsProvider
+        {
+            private readonly SunshineSettingsViewModel viewModel;
+
+            public PluginSettingsProvider(SunshineSettingsViewModel viewModel)
+            {
+                this.viewModel = viewModel;
+            }
+
+            public SunshineSettings GetSnapshot()
+            {
+                var settings = viewModel == null ? null : viewModel.Settings;
+                return settings == null ? null : settings.Clone();
+            }
+        }
+
+        private sealed class PlayniteLoggerAdapter : ISunshineLogger
+        {
+            private readonly ILogger logger;
+
+            public PlayniteLoggerAdapter(ILogger logger)
+            {
+                this.logger = logger;
+            }
+
+            public void Debug(string message)
+            {
+                logger.Debug(message);
+            }
+
+            public void Info(string message)
+            {
+                logger.Info(message);
+            }
+
+            public void Warn(string message)
+            {
+                logger.Warn(message);
+            }
+
+            public void Error(string message)
+            {
+                logger.Error(message);
+            }
+
+            public void Error(Exception exception, string message)
+            {
+                logger.Error(exception, message);
+            }
+        }
+
+        private sealed class SunshineClientTransport : ISunshineTransport
+        {
+            private readonly ILogger logger;
+
+            public SunshineClientTransport(ILogger logger)
+            {
+                this.logger = logger;
+            }
+
+            public SunshineResponse EnableWindowFollow(
+                SunshineEndpoint endpoint,
+                string mode,
+                string windowTitle,
+                int processId,
+                int sessionId,
+                bool debugLogging)
+            {
+                return new SunshineClient(logger, debugLogging)
+                    .EnableWindowFollow(endpoint, mode, windowTitle, processId, sessionId);
+            }
+
+            public SunshineResponse DisableWindowFollow(
+                SunshineEndpoint endpoint,
+                int sessionId,
+                bool debugLogging)
+            {
+                return new SunshineClient(logger, debugLogging)
+                    .DisableWindowFollow(endpoint, sessionId);
+            }
+
+            public SunshineResponse QueryStatus(SunshineEndpoint endpoint, bool debugLogging)
+            {
+                return new SunshineClient(logger, debugLogging).QueryStatus(endpoint);
+            }
+        }
+
+        #endregion
     }
 }

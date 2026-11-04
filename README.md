@@ -14,14 +14,17 @@ Playnite 配套插件：**游戏启动时让 Sunshine 把当前串流会话的�
 | --- | --- |
 | 游戏启动联动 | `OnGameStarted` 触发后，延迟 `StartDelayMs`（默认 1500ms，等游戏窗口出现），调用 `POST /api/capture/window-follow`，`action=enable`、`mode` 按设置（默认 `foreground` 跟随前台窗口），并带上模式需要的 `window_title` / `process_id` |
 | 游戏退出联动 | `OnGameStopped` 触发后调用 `action=disable`，让 Sunshine 恢复整屏捕获 |
-| Playnite 退出兜底 | `OnApplicationStopped` 时如果仍处于窗口跟随状态，会尽力发送 disable；`Dispose` 中再做一次同步兜底 |
+| Playnite 退出兜底 | `OnApplicationStopped` 时如果仍处于窗口跟随状态，会尽力发送 disable；`Dispose` 把最终 disable 排入同一个后台 worker 并等待收尾（自身不直接发网络请求） |
 | 启动状态查询 | 插件加载后 `GET /api/capture/window-follow` 查询一次当前状态，写入调试日志 |
+| 会话状态解析 | 读取真实的 `sessions` / `selected_session_id` / `selected_client_uuid`；`Active` 取选中会话的 `override.enabled`（不是 `observed.active`），`Window` / `Mode` / `Fallback` 从选中会话正确映射，并保留完整会话列表供重同步 |
+| 会话定向 | `EnableWindowFollow(..., int sessionId=0)` / `DisableWindowFollow(..., int sessionId=0)`；请求 JSON 携带 `session_id`，0 表示由 Sunshine 选择唯一活动会话 |
 | 无活动会话 | HTTP 404（当前没有活动串流会话）视为正常情况，**静默跳过**，不写错误日志、不重试 |
 | 事件竞态保护 | 游戏“启动后立刻退出”（崩溃/秒退）时，取消延迟中的 enable，避免跟随一个已经不存在的窗口 |
 | 后台线程 | 所有 HTTP 请求都在独立后台线程串行执行，绝阻塞 Playnite 主线程，异常全部在后台线程内捕获 |
 | 设置界面 | 地址、用户名、密码（PasswordBox）、总开关、捕获模式、标题/进程 ID、启动延迟、调试日志 + “测试连接”按钮 |
 | 主菜单 | 插件菜单提供“测试 Sunshine 连接”，用通知显示结果 |
-| 自签名证书 | 只对**配置的 Sunshine 端点**（scheme+host+port）放行证书错误，不影响其它 HTTPS 请求 |
+| 本机专用 | 只允许回环地址（`127.0.0.1` / `::1` / `localhost`）；`http://` 仅允许不携带凭据的调试场景；禁止自动重定向 |
+| 自签名证书 | 只对**本次请求且 URI 完全匹配的本机端点**放行证书错误；现代运行时用 per-handler 回调，旧运行时用 per-request 回调，**不修改全局** `ServicePointManager`；无法使用回调时按默认校验并清晰提示自签名错误 |
 | 失败重试 | 传输失败 / HTTP 5xx 自动重试一次；4xx 不重试 |
 | 超时 | 每次请求 3 秒超时 |
 
@@ -54,17 +57,20 @@ Playnite-WindowFollow/
 ├── install.ps1                      # 安装/更新/卸载到 Playnite 扩展目录
 ├── README.md                        # 本文
 ├── .gitignore
-└── src/
-    ├── Properties/AssemblyInfo.cs          # 程序集信息（含 net462 TargetFramework 标记，SDK-style 下关闭自动生成）
-    ├── SunshineWindowFollowPlugin.cs       # GenericPlugin 入口：事件重写、设置视图、主菜单、测试连接
-    ├── SunshineSettings.cs                 # 持久化设置模型（Playnite LoadPluginSettings/SavePluginSettings）
-    ├── SunshineSettingsViewModel.cs        # ISettings：BeginEdit/CancelEdit/EndEdit/VerifySettings
-    ├── SunshineSettingsView.cs             # 设置 UI（代码构建 WPF 控件，不依赖 XAML 编译工具链）
-    ├── SunshineController.cs               # 后台工作线程：事件→请求、延迟、取消、404 静默、状态缓存
-    ├── SunshineClient.cs                   # HTTP 客户端：Basic 认证、自签名证书、超时、重试、状态码处理
-    ├── SunshineEndpoint.cs                 # 地址规范化（scheme/host/port）与请求 URI
-    ├── SunshineModels.cs                   # 状态模型、捕获模式常量、日志文本工具
-    └── JsonLite.cs                         # 内置最小 JSON 解析器（零外部依赖）
+├── src/
+│   ├── Properties/AssemblyInfo.cs          # 程序集信息（含 net462 TargetFramework 标记，SDK-style 下关闭自动生成）
+│   ├── SunshineWindowFollowPlugin.cs       # GenericPlugin 入口：事件重写、设置视图、主菜单、测试连接
+│   ├── SunshineSettings.cs                 # 持久化设置模型（Playnite LoadPluginSettings/SavePluginSettings）
+│   ├── SunshineSettingsViewModel.cs        # ISettings：BeginEdit/CancelEdit/EndEdit/VerifySettings
+│   ├── SunshineSettingsView.cs             # 设置 UI（代码构建 WPF 控件，不依赖 XAML 编译工具链）
+│   ├── SunshineController.cs               # 后台工作线程：事件→请求、延迟、取消、404 静默、状态缓存
+│   ├── SunshineClient.cs                   # HTTP 客户端：Basic 认证、自签名证书、超时、重试、会话定向
+│   ├── SunshineEndpoint.cs                 # 地址规范化（scheme/host/port、仅回环）与请求 URI
+│   ├── SunshineModels.cs                   # 状态模型（sessions/override/observed）、捕获模式常量、日志文本工具
+│   └── JsonLite.cs                         # 内置最小 JSON 解析器（零外部依赖）
+└── tests/
+    ├── SunshineWindowFollow.ProtocolTests/ # 独立 net8 协议/TLS 回归测试（不编进插件）
+    └── SunshineLifecycle/                  # 独立 net8 控制器生命周期测试（不编进插件）
 ```
 
 ---
@@ -172,6 +178,30 @@ error MSB4236: 找不到指定的 SDK“Microsoft.NET.Sdk”。
 所以 SDK-style 工程无法由裸 MSBuild 解析；`build.ps1` 的 csc 路径就是为此准备的无 SDK 构建方案。
 有 .NET SDK / 完整 VS 的机器上，官方工程仍是最推荐的构建方式。
 
+### 3.4 协议 / TLS 回归测试（可复现）
+
+`tests/` 下是独立的 .NET 8 测试工程，直接链接 `src/` 的协议文件，**不需要安装 Playnite**；
+测试工程已从插件 csproj 中排除（`tests/**/*.cs`），不会编进 `SunshineWindowFollow.dll`。
+
+```powershell
+# 协议 / TLS（本 README 第 6、9 节的行为）
+dotnet run --project .\tests\SunshineWindowFollow.ProtocolTests -c Release
+
+# 控制器生命周期（多游戏、会话定向、404 对账、Dispose 收尾）
+dotnet run --project .\tests\SunshineLifecycle -c Release
+```
+
+测试使用本地 Kestrel 启动 HTTP/HTTPS 服务，HTTPS 证书在运行时生成（自签名且 CN 与 `127.0.0.1` 不匹配），覆盖：
+
+- 真实嵌套响应解析：`sessions` / `selected_session_id` / `selected_client_uuid`、`override.enabled`、`observed.*`；
+- `Active=override.enabled`（即使 `observed.active` 相反）、`Mode` / `Window` / `Fallback` 映射、会话列表保留；
+- 旧根级字段不再被误用；无 selected 时回退到 selected/唯一会话；
+- 请求 JSON 包含 `session_id`（含中文/引号转义）；
+- 非回环、URL 内嵌凭据、明文 HTTP 携带凭据均被拒绝；
+- 自签名 HTTPS 回环可用，且进程级 `ServicePointManager.ServerCertificateValidationCallback` 不被修改；
+- `requestUri==null` / 非本机 URI / 不同端口 / 不同 scheme 不放行证书错误；
+- 302 重定向不被跟随；旧运行时证书错误有清晰提示。
+
 ---
 
 ## 4. 安装
@@ -236,7 +266,7 @@ error MSB4236: 找不到指定的 SDK“Microsoft.NET.Sdk”。
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | 启用插件 | `true` | 总开关。关闭后插件不发起任何请求 |
-| Sunshine 地址 | `https://127.0.0.1:47990` | Sunshine WebUI 端口（默认 47990）。可省略 `https://`；路径部分会被忽略；也支持 `http://`（不推荐，凭据会明文传输） |
+| Sunshine 地址 | `https://127.0.0.1:47990` | Sunshine WebUI 端口（默认 47990）。可省略 `https://`；路径部分会被忽略；**只允许回环地址**（`127.0.0.1` / `::1` / `localhost`）。`http://` 仅允许在用户名和密码都为空时用于本机调试，带凭据会被拒绝 |
 | 用户名 | 空 | Sunshine WebUI 用户名（HTTP Basic 认证） |
 | 密码 | 空 | Sunshine WebUI 密码（HTTP Basic 认证）。**以明文保存在插件配置文件中**，见安全说明 |
 | 输出调试日志 | `false` | 打开后把请求/响应详情写入 Playnite 日志（`logger.Debug`） |
@@ -263,7 +293,7 @@ error MSB4236: 找不到指定的 SDK“Microsoft.NET.Sdk”。
 
 ## 6. Sunshine 端点契约（插件按此实现）
 
-Base URL 默认 `https://127.0.0.1:47990`（Sunshine WebUI 端口，自签名证书）；认证 HTTP Basic（Sunshine WebUI 用户名/密码）。
+Base URL 默认 `https://127.0.0.1:47990`（Sunshine WebUI 端口，本机自签名证书）；认证 HTTP Basic（Sunshine WebUI 用户名/密码）。该控制端点只接受本机请求，插件也仅在回环地址上工作。
 
 ### 请求
 
@@ -280,19 +310,64 @@ Content-Type: application/json
 | `mode` | `foreground`（推荐）/ `title` / `pid` |
 | `window_title` | `mode=title` 时使用；插件在设置为空时填游戏名 |
 | `process_id` | `mode=pid` 时使用；插件在设置为 0 时填 `StartedProcessId` |
-| `session_id` | 固定 `0`，由 Sunshine 自动选择唯一活动会话 |
+| `id` | 目标会话 ID（新版本地控制协议字段）；`0` = 由 Sunshine 选择唯一活动会话 |
+| `session_id` | 会话 ID；`0` = 自动选择唯一活动会话 |
 
-`GET /api/capture/window-follow` 返回同样的状态结构（插件启动时查询、设置页“测试连接”使用）。
+`EnableWindowFollow(endpoint, mode, title, pid, sessionId)` 与
+`DisableWindowFollow(endpoint, sessionId)` 的最后一个参数就是上面的会话 ID；
+控制器在 enable 成功后保存 `selected_session_id`，退出时定向 disable 同一个会话，避免多客户端时自动选择返回 409。
+
+`GET /api/capture/window-follow` 返回会话列表（插件启动时查询、设置页“测试连接”使用）。
 
 ### 响应
 
-成功 200：
+成功 200（GET 与 POST 相同；POST 额外带 `selected_*`）：
 
 ```json
-{"ok":true,"active":true,"mode":"foreground","session_id":1,"client_uuid":"...",
- "window":{"title":"...","process_id":123,"hwnd":"0x00000000000A1B2C"},
- "fallback":null,"error":null}
+{
+  "ok": true,
+  "feature": "window-follow",
+  "supported": true,
+  "sessions": [
+    {
+      "session_id": 1,
+      "client_uuid": "...",
+      "client_name": "Moonlight",
+      "app_name": "Playnite",
+      "running": true,
+      "control_only": false,
+      "override": { "enabled": true, "mode": "foreground", "window_title": "", "process_id": 0 },
+      "observed": {
+        "active": true,
+        "fallback_to_display": false,
+        "window_title": "Hades",
+        "process_id": 1234,
+        "hwnd": "0x00000000000A1B2C",
+        "fallback_reason": ""
+      }
+    }
+  ],
+  "selected_session_id": 1,
+  "selected_client_uuid": "..."
+}
 ```
+
+插件解析规则（`SunshineModels.cs`）：
+
+| 插件字段 | 来源 |
+| --- | --- |
+| `Ok` | 顶层 `ok` |
+| `Active` | **选中会话的 `override.enabled`**（不是 `observed.active`；后者只表示捕获后端当前是否真的跟随到窗口） |
+| `Mode` | 选中会话的 `override.mode` |
+| `Window` | 选中会话的 `observed.window_title` / `process_id` / `hwnd` |
+| `Fallback` | 选中会话的 `observed.fallback_reason` |
+| `FallbackToDisplay` | 选中会话的 `observed.fallback_to_display` |
+| `SessionId` | 优先 `selected_session_id`；否则按 `selected_client_uuid` 匹配，再取标记/唯一会话 |
+| `ClientUuid` | 优先 `selected_client_uuid`；否则取选中/唯一会话的 `client_uuid` |
+| `Sessions` | 完整会话列表（含每个会话的 override/observed），供后续按会话重同步 |
+
+**旧版根级解析已移除**：不再读取顶层的 `active` / `mode` / `session_id` / `client_uuid` / `window` / `fallback`。
+这些值在真实响应中不存在，误读会把其他会话或 `observed.active` 当成插件状态。
 
 ### 插件对状态码的处理
 
@@ -303,7 +378,8 @@ Content-Type: application/json
 | 401 | 认证失败 | ERROR 日志提示检查用户名/密码（不重试） |
 | 403 | 非本机 | ERROR 日志提示 Playnite 与 Sunshine 必须在同一台机器（不重试） |
 | 404 | 当前没有活动串流会话 | **静默跳过**（DEBUG 日志，不重试，不视为错误） |
-| 409 | 多会话 / 不支持 | WARN 日志（不重试） |
+| 409 | 多会话 / 不支持 | WARN 日志（不重试）；控制器会尝试用已保存的 `session_id` 定向重试 disable |
+| 3xx | 重定向 | **不跟随**；按非 200 错误记录，避免 Basic 凭据/控制请求被带往其他地址 |
 | 5xx | 服务端错误 | 自动重试一次；仍失败写 ERROR 日志 |
 | 传输失败 | 连接失败/超时/证书错误 | 自动重试一次；仍失败写 ERROR 日志（含根因链，如 `请求超时（3000 毫秒）`） |
 
@@ -322,6 +398,10 @@ Content-Type: application/json
 连接成功（HTTP 200）。ok=True, active=True, mode=foreground, session_id=1,
 client_uuid=..., window[title="Hades", process_id=1234, hwnd=0x...]
 ```
+
+`active` 表示**请求的 override 已启用**（`override.enabled=true`）。如果 `observed.active=false`
+且带有 `fallback_reason`，说明 Sunshine 已接受请求但暂时没找到窗口，会回退到整屏捕获并继续重试；
+此时连接测试仍显示成功，详情里的 `window[...]` / `fallback=...` 可用于排查。
 
 ```
 已连通 Sunshine，但当前没有活动的串流会话（HTTP 404）。开始串流后再测试可看到完整状态。
@@ -346,8 +426,10 @@ client_uuid=..., window[title="Hades", process_id=1234, hwnd=0x...]
 | 提示 SDK 版本不兼容 | 插件引用的 Playnite SDK 6.17.0 需要 Playnite 6.17+。用 `build.ps1 -PlayniteSdkVersion`（或 `-PlayniteDir` 指向本机 Playnite）重新构建 |
 | 测试连接 401 | 用户名/密码错误；Sunshine 首次运行创建的 WebUI 账号信息可在 Sunshine 安装目录的 `sunshine.conf` 中查看/重置 |
 | 测试连接 403 | Playnite 与 Sunshine 不在同一台机器，或请求不是从本机回环地址发出（端点只允许本机） |
+| 地址被拒绝：只允许回环 | 插件只接受 `127.0.0.1` / `::1` / `localhost`。把 `http://192.168.x.x:47990`、域名或公网地址改成 `https://127.0.0.1:47990` |
+| 地址被拒绝：明文 http 凭据 | 使用 `http://` 时不能填写用户名/密码。改回 `https://127.0.0.1:47990`，或清空凭据用于本机无认证调试 |
 | 测试连接 404 | 当前没有活动的串流会话。这是正常现象：单机游玩时 enable 会被静默跳过 |
-| 测试连接报证书/连接错误 | 地址或端口不对（默认 47990 是 WebUI HTTPS 端口，不是串流端口 47989/47984）；Sunshine 未启动；`https://` vs `http://` 不一致 |
+| 测试连接报证书/连接错误 | 地址或端口不对（默认 47990 是 WebUI HTTPS 端口，不是串流端口 47989/47984）；Sunshine 未启动；`https://` vs `http://` 不一致。若日志提示“TLS 证书校验/自签名”：确认地址是**回环地址**；极老运行时无法使用每请求回调时，把 Sunshine 证书安装到本机“受信任的根证书颁发机构”，或改用受信任证书 |
 | 游戏启动了但手机端画面没变化 | 1) 插件总开关是否为开；2) Playnite 日志是否有“请求 Sunshine 启用窗口跟随”；3) Sunshine 是否已安装方案4补丁（对未打补丁的 Sunshine，`/api/capture/window-follow` 会返回 404）；4) 调试日志里是否出现 `HTTP 404`（无活动串流会话）；5) 尝试把启动延迟调大（如 2500ms）或改用 `pid` 模式 |
 | 游戏退出后画面没有恢复 | 检查日志里 disable 的结果；如果 Playnite 被强退（没有 OnGameStopped），下次串流开始时会由 Sunshine 默认状态决定；插件在 Playnite 正常退出时会兜底发送 disable |
 | enable 成功但跟随了错误窗口 | 改用 `title` / `pid` 模式；`title` 模式建议填写准确的窗口标题 |
@@ -357,21 +439,31 @@ client_uuid=..., window[title="Hades", process_id=1234, hwnd=0x...]
 
 ## 9. 安全说明（请务必阅读）
 
-1. **自签名证书放行范围**：Sunshine WebUI 默认使用自签名证书。插件**不会**全局关闭证书校验：
-   - 运行在 .NET Framework 4.7.1+（Windows 10/11 实际运行时基本都是 4.8）时，通过反射使用
-     `HttpClientHandler.ServerCertificateCustomValidationCallback`，只作用于**本次请求的 handler**；
-   - 更老的运行时（4.6.2–4.7.0）退化为临时替换进程级 `ServicePointManager.ServerCertificateValidationCallback`：
-     只对**配置的 Sunshine 端点**（scheme + host + port 完全一致）放行证书错误，其它请求回退到原有回调/默认校验，
-     并在本次请求结束后立刻恢复原回调；
-   - 无论哪种方式，**不会**接受其它主机的证书错误。
-2. **凭据明文**：Playnite SDK 没有提供加密存储能力，Sunshine 用户名/密码以**明文 JSON** 保存在
+1. **只允许本机端点**：Sunshine 的 `/api/capture/window-follow` 是 localhost-only API。
+   插件在 `SunshineEndpoint.TryCreate` 阶段就拒绝非回环主机（`127.0.0.1` / `::1` / `localhost`），
+   避免把控制请求和 Basic 凭据发到局域网/公网。
+2. **自签名证书放行范围**：Sunshine WebUI 默认使用自签名证书。插件**不会**全局关闭证书校验，
+   也**不会**替换进程级 `ServicePointManager.ServerCertificateValidationCallback`：
+   - .NET Framework 4.7.1+：通过反射使用 `HttpClientHandler.ServerCertificateCustomValidationCallback`，
+     只作用于**本次请求的 handler**；
+   - 旧运行时：使用 `HttpWebRequest.ServerCertificateValidationCallback`（同样只作用于**本次 request**）；
+     没有该属性的运行时退回默认校验，自签名证书会失败，但日志会明确提示“TLS 证书校验/自签名”
+     以及“安装到受信任根存储或改用受信任证书”的处理办法；
+   - 回调只有在 `requestUri != null`、URI 为回环、且 scheme+host+port 与配置端点**完全一致**时才放行
+     证书错误；`requestUri==null` 一律拒绝；
+   - 不会接受其它主机（包括非回环地址）的证书错误。
+3. **不跟随重定向**：`HttpClientHandler.AllowAutoRedirect=false`，旧路径
+   `HttpWebRequest.AllowAutoRedirect=false`；302/301 原样返回并按错误处理，避免 Basic 凭据被带到
+   `Location` 指定的其它地址。
+4. **凭据明文**：Playnite SDK 没有提供加密存储能力，Sunshine 用户名/密码以**明文 JSON** 保存在
    `%AppData%\Playnite\ExtensionsData\<插件 GUID>\config.json`。请确保该目录仅本机可信用户可读；
-   不要在多人共用的机器上保存密码。如需更高安全性，可考虑改用 Sunshine WebUI 的本地 API token（需 Sunshine 侧补丁配合，当前未使用）。
-3. **HTTP Basic 认证**：凭据以 Base64（等价明文）方式放在请求头里。使用 `http://` 时凭据会以明文经过网络；
-   Sunshine 与本机通信默认 `https://`，同时建议保持地址为回环地址 `127.0.0.1`。
-4. **端口暴露**：Sunshine WebUI 端口（默认 47990）如果暴露到局域网/公网，等于把窗口控制接口也暴露出去；
-   请仅在受信网络中开放，或使用防火墙限制来源。
-5. **插件权限**：插件只做“向配置的地址发送 HTTP 请求 + 记录日志”，不读写游戏文件、不执行外部程序。
+   不要在多人共用的机器上保存密码。
+5. **HTTP Basic 与明文 HTTP**：凭据以 Base64（等价明文）放在请求头里。插件只允许在无凭据时使用
+   `http://`（本机调试）；配置了用户名/密码却使用 `http://` 会直接拒绝，客户端还会在发送前再兜底拒绝一次。
+   正常使用请保持 `https://127.0.0.1:47990`。
+6. **端口暴露**：即使插件只连回环地址，Sunshine WebUI 端口（默认 47990）如果被端口转发/代理暴露到
+   局域网或公网，仍可能让外部访问控制接口；请用防火墙限制来源，不要将 47990 暴露到公网。
+7. **插件权限**：插件只做“向配置的回环地址发送 HTTP 请求 + 记录日志”，不读写游戏文件、不执行外部程序。
 
 ---
 
@@ -379,27 +471,30 @@ client_uuid=..., window[title="Hades", process_id=1234, hwnd=0x...]
 
 ### 已验证 ✅
 
-- **构建**：本机 `.\build.ps1` 用 Roslyn csc + NuGet 参考程序集成功编译（见 3.3 输出）；产物程序集可用 .NET Framework 运行时正常加载。
-- **Playnite 加载约束**：产物引用 `Playnite.SDK 6.17.0.0`、不引用 `Playnite`/`Playnite.Common`、插件类继承 `GenericPlugin` 且 `Id` 为 Guid、设置类实现 `ISettings` —— 与 Playnite `ExtensionFactory` 的加载/校验逻辑一致。
-- **HTTP 端到端测试**（本地自签名 HTTPS 测试服务器，**28 项全部通过**，测试程序位于 `.build\test\`，不随插件发布）：
-  - 端点地址规范化（自动补 `https://`、忽略路径、拒绝非法协议/空地址）；
-  - 自签名且 CN/IP 不匹配的证书，在“只放行配置端点”策略下可连接；
-  - HTTP Basic 认证头（含 UTF-8 中文凭据）；
-  - `enable`/`disable` 请求体与契约**逐字节一致**（字段顺序、JSON 转义、中文、`session_id:0`）；
-  - 200 响应解析（`window`/`session_id`/`client_uuid`/`fallback:null`）；
-  - 404 原样返回不重试；500 重试一次；连接失败重试一次；
-  - 4.6.2–4.7.0 回退路径（`HttpWebRequest` + 限定范围全局证书回调）可用，且请求后恢复原有回调；
-  - JSON 解析边界（`window:null`、unicode 转义、中文、非法 JSON、未知字段）；
-  - **Controller 事件流**：游戏启动→延迟后发 enable；退出→发 disable；启动后立刻退出→取消延迟中的 enable（不发请求）；404 静默跳过且不重复请求。
-- **安装脚本**：`install.ps1` 安装/覆盖安装（含旧版本备份）/卸载，用临时扩展目录实测通过；`extension.yaml` 的 Id/Version/Module 会在安装前校验。
+- **协议/TLS 回归**：`tests/SunshineWindowFollow.ProtocolTests` 在本地 Kestrel HTTP/HTTPS 服务上运行，
+  **15/15 通过**（自签名且 CN 与 `127.0.0.1` 不匹配的证书）；覆盖嵌套响应解析、会话选择、
+  `Active=override.enabled`、`Window/Mode/Fallback` 映射、旧根级字段忽略、请求 JSON（`session_id`/转义）、
+  非回环/凭据/明文 HTTP 拒绝、`requestUri==null` 拒绝、302 不跟随、全局证书回调不变、证书错误提示。
+- **控制器生命周期回归**：`tests/SunshineLifecycle` 的 **10/10** 场景通过（多游戏启停、代次竞态、enable 后
+  保存 `session_id` 定向 disable、409 回退、404 清理/有界对账、Dispose 在同一 worker 收尾）。
+- **编译**：完整插件源码（`src/**/*.cs`）用 Roslyn csc + net462 参考程序集 + PlayniteSDK 6.17.0 编译通过；
+  `SunshineWindowFollow.csproj` 已排除 `tests/**/*.cs`，测试代码不会进入插件 DLL。
+- **Playnite 加载约束**：产物引用 `Playnite.SDK 6.17.0.0`、不引用 `Playnite`/`Playnite.Common`、插件类继承
+  `GenericPlugin` 且 `Id` 为 Guid、设置类实现 `ISettings` —— 与 Playnite `ExtensionFactory` 的加载/校验逻辑一致。
+- **安装脚本**：`install.ps1` 安装/覆盖安装（含旧版本备份）/卸载，用临时扩展目录实测通过；
+  `extension.yaml` 的 Id/Version/Module 会在安装前校验。
 
 ### 未验证 ⚠️
 
-- **未在真实 Playnite 中加载运行**：本机没有安装 Playnite（开发机上没有 Playnite 目录），无法实际验证插件出现在扩展列表、设置界面渲染、`OnGameStarted/OnGameStopped` 真实事件回调；这些 API 用法是逐行核对 Playnite 源码确认的，但**运行时行为未实测**。
-- **未联调真实 Sunshine 补丁端点**：Sunshine 侧 `/api/capture/window-follow` 由 Lead 并行开发，本插件按给定契约实现并用本地模拟服务器验证；真实端点的行为（尤其 `title`/`pid` 模式的窗口匹配规则、`session_id` 选择、`fallback` 语义）需要联调确认。
-- **dotnet/VS 官方构建路径未在本机执行**：本机无 dotnet CLI 与 net462 targeting pack，`SunshineWindowFollow.csproj` 的 `dotnet build` 路径未实测（工程格式对齐 Playnite 官方扩展模板与 `Playnite.SDK.csproj`，有 dotnet 的机器上应可直接构建）。
-- **Playnite 版本兼容性**：默认引用 PlayniteSDK 6.17.0（Playnite ≥6.17）。未在 6.16/6.17/6.18 各版本上实测；如目标机器版本不同，用 `build.ps1 -PlayniteDir` 或 `-PlayniteSdkVersion` 重新构建即可。
-- **设置界面视觉效果**：设置 UI 是用代码构建的 WPF 控件（刻意不用 XAML，以便在无 XAML 工具链的机器上完成编译验证），功能逻辑已编译/部分单测覆盖，但**外观未在 Playnite 设置页人工确认**。
+- **未在真实 Playnite 中加载运行**：开发机没有安装 Playnite，无法实际验证扩展列表、设置界面渲染、
+  `OnGameStarted/OnGameStopped` 真实事件回调；这些 API 用法是逐行核对 Playnite 源码确认的。
+- **未在真机联调真实 Sunshine 补丁端点**：协议 fixture 按需求给出的真实响应结构构造，并用本地模拟服务器
+  做端到端验证；真实 `title`/`pid` 窗口匹配、`fallback_reason` 的具体取值仍需在 Windows 真机确认。
+- **插件 `dotnet build` / `build.ps1` 路径**：本次验证使用 Roslyn csc 直接编译完整插件源码与 net8 测试工程；
+  未在 Windows + Playnite 环境执行 `build.ps1`/`dotnet build`（工程格式沿用原模板，见 3.3）。
+- **Playnite 版本兼容性**：默认引用 PlayniteSDK 6.17.0（Playnite ≥6.17）。未在 6.16/6.17/6.18 各版本上实测；
+  如目标机器版本不同，用 `build.ps1 -PlayniteDir` 或 `-PlayniteSdkVersion` 重新构建即可。
+- **设置界面视觉效果**：设置 UI 是用代码构建的 WPF 控件，**外观未在 Playnite 设置页人工确认**。
 
 ---
 
