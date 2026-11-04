@@ -63,6 +63,9 @@ namespace SunshineWindowFollow
 
         public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
         {
+            // Playnite launched by Sunshine starts in the background because of
+            // the Windows foreground lock; bring its window to the foreground.
+            WindowActivation.ActivateOwnMainWindowAsync();
             try
             {
                 // 可选加分项：插件启动时查询一次 Sunshine 状态，便于排查问题。

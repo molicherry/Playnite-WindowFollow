@@ -244,11 +244,6 @@ namespace SunshineWindowFollow
                 return;
             }
 
-            if (Volatile.Read(ref knownActive) == 0)
-            {
-                WriteDebug("Sunshine 当前已是整屏捕获（已知状态），跳过重复 disable");
-                return;
-            }
 
             SunshineEndpoint endpoint;
             string error;

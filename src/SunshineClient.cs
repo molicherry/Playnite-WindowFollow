@@ -159,38 +159,63 @@ namespace SunshineWindowFollow
                 var callback = new Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool>(
                     delegate (HttpRequestMessage request, X509Certificate2 certificate, X509Chain chain, SslPolicyErrors errors)
                     {
-                        return ValidateCertificate(request == null ? null : request.RequestUri, endpoint, errors);
+                        var allowed = ValidateCertificate(request == null ? null : request.RequestUri, endpoint, errors);
+                        return allowed;
                     });
                 HandlerCertificateCallbackProperty.SetValue(handler, callback);
 
-                using (var client = new HttpClient(handler, false))
-                {
-                    client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
-
-                    using (var request = new HttpRequestMessage(new HttpMethod(method), endpoint.ApiUri))
+                // .NET Framework 的 HttpClient 底层仍走 HttpWebRequest，某些宿主机环境
+                // 会忽略 per-handler 回调；请求期间再挂一个限定范围的全局回调兜底。
+                var previousCallback = ServicePointManager.ServerCertificateValidationCallback;
+                ServicePointManager.ServerCertificateValidationCallback =
+                    delegate (object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
                     {
-                        request.Headers.Authorization = CreateAuthorizationHeader(endpoint);
-                        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                        if (body != null)
+                        var webRequest = sender as HttpWebRequest;
+                        var requestUri = webRequest == null ? null : webRequest.RequestUri;
+                        var allowed = endpoint.MatchesRequestUri(requestUri) || errors == SslPolicyErrors.None;
+                        if (allowed)
                         {
-                            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                            return true;
                         }
 
-                        try
+                        return previousCallback != null && previousCallback(sender, certificate, chain, errors);
+                    };
+
+                try
+                {
+                    using (var client = new HttpClient(handler, false))
+                    {
+                        client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
+
+                        using (var request = new HttpRequestMessage(new HttpMethod(method), endpoint.ApiUri))
                         {
-                            using (var response = client.SendAsync(request).GetAwaiter().GetResult())
+                            request.Headers.Authorization = CreateAuthorizationHeader(endpoint);
+                            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                            if (body != null)
                             {
-                                var responseBody = response.Content == null
-                                    ? string.Empty
-                                    : response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-                                return BuildResponse((int)response.StatusCode, responseBody);
+                                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                            }
+
+                            try
+                            {
+                                using (var response = client.SendAsync(request).GetAwaiter().GetResult())
+                                {
+                                    var responseBody = response.Content == null
+                                        ? string.Empty
+                                        : response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                                    return BuildResponse((int)response.StatusCode, responseBody);
+                                }
+                            }
+                            catch (Exception exception)
+                            {
+                                return CreateTransportFailure(exception);
                             }
                         }
-                        catch (Exception exception)
-                        {
-                            return CreateTransportFailure(exception);
-                        }
                     }
+                }
+                finally
+                {
+                    ServicePointManager.ServerCertificateValidationCallback = previousCallback;
                 }
             }
         }
@@ -354,7 +379,19 @@ namespace SunshineWindowFollow
                 return true;
             }
 
-            return endpoint != null && endpoint.MatchesRequestUri(requestUri);
+            if (endpoint == null)
+            {
+                return false;
+            }
+
+            // .NET Framework 的 HttpClientHandler 回调在部分宿主环境下拿不到
+            // HttpRequestMessage（request == null），此时信任用户显式配置的端点。
+            if (requestUri == null)
+            {
+                return true;
+            }
+
+            return endpoint.MatchesRequestUri(requestUri);
         }
 
         private static string ReadResponseBody(HttpWebResponse response)
