@@ -26,8 +26,9 @@ Coverage:
   and a forged non-loopback endpoint is refused before any request is sent;
 - self-signed loopback HTTPS works without changing
   `ServicePointManager.ServerCertificateValidationCallback`;
-- certificate errors are accepted only for the exact loopback request URI; `requestUri == null`
-  is rejected;
+- certificate errors are accepted only for the exact loopback request URI; a null request URI is
+  resolved to the configured loopback endpoint for the handler callback (the Playnite host can
+  omit the request object), while unknown endpoints stay rejected;
 - redirects are not followed;
 - self-signed TLS failures produce an actionable error message;
 - malformed JSON returns `null`.

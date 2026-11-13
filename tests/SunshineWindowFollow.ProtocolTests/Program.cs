@@ -339,6 +339,27 @@ namespace SunshineWindowFollow.ProtocolTests
                     SslPolicyErrors.RemoteCertificateNameMismatch),
                 "null request URI rejected by compatibility entry point");
 
+            // Playnite hosts on .NET Framework may invoke the handler callback
+            // without an HttpRequestMessage; the production callback resolves that
+            // to the configured loopback URI before validating.
+            Assert.Equal(
+                endpoint.ApiUri,
+                SunshineClient.ResolveCertificateRequestUri(null, endpoint),
+                "null request URI resolves to configured loopback endpoint");
+            Assert.True(
+                SunshineClient.IsCertificateAllowed(
+                    SunshineClient.ResolveCertificateRequestUri(null, endpoint),
+                    endpoint,
+                    SslPolicyErrors.RemoteCertificateNameMismatch),
+                "resolved loopback endpoint accepted for self-signed certificate");
+            var forgedRemote = ForgeEndpoint(
+                new Uri("https://192.0.2.1:47990/api/capture/window-follow"),
+                string.Empty,
+                string.Empty);
+            Assert.True(
+                SunshineClient.ResolveCertificateRequestUri(null, forgedRemote) == null,
+                "non-loopback endpoint is not used as a null request URI fallback");
+
             Assert.True(
                 SunshineClient.IsCertificateAllowed(
                     endpoint.ApiUri,

@@ -205,9 +205,15 @@ namespace SunshineWindowFollow
                 var callback = new Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool>(
                     delegate (HttpRequestMessage request, X509Certificate2 certificate, X509Chain chain, SslPolicyErrors errors)
                     {
-                        // 旧版 .NET Framework 可能在回调里传 null HttpRequestMessage；
-                        // 此时无法确认请求目标，绝不因“已配置端点”而放行。
-                        return IsCertificateAllowed(request == null ? null : request.RequestUri, endpoint, errors);
+                        // The Playnite host (.NET Framework) can invoke this callback
+                        // without the HttpRequestMessage. The control client only
+                        // talks to the configured loopback endpoint, so validate
+                        // against that URI; IsCertificateAllowed still rejects
+                        // non-loopback or mismatching targets.
+                        return IsCertificateAllowed(
+                            ResolveCertificateRequestUri(request == null ? null : request.RequestUri, endpoint),
+                            endpoint,
+                            errors);
                     });
 
                 try
@@ -250,6 +256,16 @@ namespace SunshineWindowFollow
                         }
                         catch (Exception exception)
                         {
+                            if (SupportsPerRequestCertificateCallback && IsCertificateFailure(exception))
+                            {
+                                // The host may ignore or mis-handle the per-handler
+                                // callback. HttpWebRequest has a per-request callback
+                                // that receives the actual request URI, so retry there
+                                // once before surfacing the TLS failure.
+                                WriteDebug("HttpClient 证书回调失败，改用 HttpWebRequest 每请求回调重试");
+                                return ExecuteWithHttpWebRequest(endpoint, method, body);
+                            }
+
                             return CreateTransportFailure(exception);
                         }
                     }
@@ -476,8 +492,28 @@ namespace SunshineWindowFollow
         }
 
         /// <summary>
+        /// Resolve the URI used for certificate validation.
+        ///
+        /// Playnite hosts on .NET Framework may invoke the HttpClientHandler
+        /// certificate callback without an HttpRequestMessage. The control client
+        /// only talks to the configured loopback endpoint, so fall back to that
+        /// URI; <see cref="IsCertificateAllowed"/> still rejects non-loopback or
+        /// mismatching targets.
+        /// </summary>
+        internal static Uri ResolveCertificateRequestUri(Uri requestUri, SunshineEndpoint endpoint)
+        {
+            if (requestUri != null)
+            {
+                return requestUri;
+            }
+
+            return endpoint != null && endpoint.IsLoopbackHost ? endpoint.ApiUri : null;
+        }
+
+        /// <summary>
         /// 仅接受“常规校验通过”或“本次请求目标就是配置的本机 Sunshine 端点”两种情况。
-        /// requestUri 为 null 时拒绝（无法证明请求目标）；非回环地址一律拒绝。
+        /// 调用方应先用 <see cref="ResolveCertificateRequestUri"/> 解析缺失的请求 URI；
+        /// 仍为 null 时拒绝（无法证明请求目标）；非回环地址一律拒绝。
         /// </summary>
         internal static bool IsCertificateAllowed(Uri requestUri, SunshineEndpoint endpoint, SslPolicyErrors errors)
         {

@@ -1,0 +1,41 @@
+name: Plugin tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  protocol-tests:
+    name: Protocol/TLS tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run protocol/TLS tests
+        run: dotnet run --project .\tests\SunshineWindowFollow.ProtocolTests -c Release
+
+  lifecycle-tests:
+    name: Lifecycle unit tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run lifecycle unit tests
+        run: dotnet run --project .\tests\SunshineLifecycle -c Release
+
+      - name: Run install.ps1 lifecycle regression
+        shell: pwsh
+        run: .\tests\SunshineLifecycle\SunshineLifecycleInstall.Tests.ps1
