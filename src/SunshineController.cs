@@ -108,8 +108,8 @@ namespace SunshineWindowFollow
             public long StartOrder { get; set; }
         }
 
-        /// <summary>两次请求（enable/status + 最终 disable）的最坏等待时间，约 15 秒。</summary>
-        internal const int DefaultDisposeWaitMs = 15200;
+        /// <summary>两次请求（enable/status + 最终 disable）的最坏等待时间，约 20 秒。</summary>
+        internal const int DefaultDisposeWaitMs = 20000;
 
         // 有界低频对账：最多 6 次探测，间隔逐步拉长，约 6 分钟后彻底停止。
         private static readonly int[] DefaultReconcileDelaysMs =
@@ -980,6 +980,22 @@ namespace SunshineWindowFollow
                 return false;
             }
 
+            // A newer enable superseded this disable. Retrying the old target
+            // would disable the newer follow request; let reconciliation (or
+            // the later generation) decide instead.
+            if (response.Status != null &&
+                string.Equals(response.Status.Error, "window_follow_superseded", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            // disable 已被接受但后端还在恢复：再次定向 disable 只会重复等待，
+            // 捕获线程完成后会自行放行。
+            if (response.Status != null && response.Status.Restoring)
+            {
+                return false;
+            }
+
             var status = response.Status;
             if (status != null && status.SessionId > 0)
             {
@@ -1064,7 +1080,11 @@ namespace SunshineWindowFollow
 
                     if (!stillActive)
                     {
-                        if (status != null)
+                        if (status != null && status.Restoring)
+                        {
+                            logger.Info("Sunshine disable 已接受，捕获后端仍在恢复（restoring）；等待捕获线程确认");
+                        }
+                        else if (status != null)
                         {
                             logger.Info("Sunshine disable 完成：" + status.Describe());
                         }
@@ -1109,7 +1129,15 @@ namespace SunshineWindowFollow
                     break;
 
                 case 409:
-                    logger.Warn("Sunshine 报告存在多个活动串流会话或该模式不受支持（HTTP 409），disable 仍未完成");
+                    if (status != null &&
+                        string.Equals(status.Error, "window_follow_superseded", StringComparison.Ordinal))
+                    {
+                        logger.Info("Sunshine disable 被更新的 enable 覆盖（window_follow_superseded），不再重试旧目标");
+                    }
+                    else
+                    {
+                        logger.Warn("Sunshine 报告存在多个活动串流会话或该模式不受支持（HTTP 409），disable 仍未完成");
+                    }
                     ScheduleNextReconcile(command.Generation);
                     break;
 

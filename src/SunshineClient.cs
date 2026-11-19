@@ -37,7 +37,11 @@ namespace SunshineWindowFollow
     /// </summary>
     public sealed class SunshineClient
     {
-        public const int TimeoutMs = 3000;
+        // A disable request may wait up to 5 seconds on the Sunshine side for
+        // the capture backend to confirm the restore. Keep the client timeout
+        // above that window so a legitimate "restoring" response is received
+        // instead of being reported as a transport timeout.
+        public const int TimeoutMs = 7000;
         public const int MaxAttempts = 2;
         private const int RetryDelayMs = 300;
 

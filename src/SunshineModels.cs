@@ -300,6 +300,12 @@ namespace SunshineWindowFollow
 
         public bool Supported { get; set; }
 
+        /// <summary>
+        /// Sunshine 已接受 disable，但捕获后端仍在恢复（响应带 restoring）。
+        /// 此时不要立即重复 disable，等捕获线程确认即可。
+        /// </summary>
+        public bool Restoring { get; set; }
+
         public string Reason { get; set; }
 
         public string Feature { get; set; }
@@ -332,7 +338,8 @@ namespace SunshineWindowFollow
                 Ok = root.GetBool("ok"),
                 Error = root.GetString("error"),
                 Feature = root.GetString("feature"),
-                Reason = root.GetString("reason")
+                Reason = root.GetString("reason"),
+                Restoring = root.GetBool("restoring")
             };
 
             var supported = root.Get("supported");
